@@ -6,6 +6,54 @@ const { authenticateToken, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
 
+// Get candidate's interviews (separate from invitations)
+router.get('/candidate/interviews', authenticateToken, requireRole('candidate'), async (req, res) => {
+  try {
+    const { data: interviews, error } = await supabase
+      .from('interviews')
+      .select(`
+        id,
+        start_at,
+        end_at,
+        room_code,
+        status,
+        job:jobs(id, title, location, hr:users!jobs_hr_id_fkey(name, email)),
+        invitation:invitations(id, message)
+      `)
+      .eq('candidate_id', req.user.id)
+      .order('start_at', { ascending: false });
+
+    if (error) {
+      console.error('Database error:', error);
+      return res.status(500).json({ error: 'Failed to fetch interviews' });
+    }
+
+    // Add time status to each interview
+    const now = new Date();
+    const interviewsWithStatus = interviews?.map(interview => {
+      const startTime = new Date(interview.start_at);
+      const endTime = new Date(interview.end_at);
+      
+      let timeStatus = 'upcoming';
+      if (now >= startTime && now <= endTime) {
+        timeStatus = 'active';
+      } else if (now > endTime) {
+        timeStatus = 'past';
+      }
+
+      return {
+        ...interview,
+        time_status: timeStatus
+      };
+    }) || [];
+
+    res.json({ interviews: interviewsWithStatus });
+  } catch (error) {
+    console.error('Get interviews error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Get candidate's invitations
 router.get('/candidate/invitations', authenticateToken, requireRole('candidate'), async (req, res) => {
   try {
@@ -16,13 +64,14 @@ router.get('/candidate/invitations', authenticateToken, requireRole('candidate')
         status,
         message,
         created_at,
-        application:applications(
+        application:applications!inner(
           id,
+          candidate_id,
           job:jobs(id, title, location, hr:users!jobs_hr_id_fkey(name, email))
         ),
         interview:interviews(id, start_at, end_at, room_code, status)
       `)
-      .eq('applications.candidate_id', req.user.id)
+      .eq('application.candidate_id', req.user.id)
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -191,7 +240,7 @@ router.post('/hr/applications/:applicationId/invite', authenticateToken, require
   }
 });
 
-// Schedule interview (HR only)
+// Schedule interview (HR only) - Fixed data structure
 router.post('/hr/invitations/:invitationId/schedule', authenticateToken, requireRole('hr'), [
   body('start_at').isISO8601().withMessage('Start time must be a valid date'),
   body('end_at').isISO8601().withMessage('End time must be a valid date')
@@ -227,10 +276,10 @@ router.post('/hr/invitations/:invitationId/schedule', authenticateToken, require
       .select(`
         id,
         status,
-        application:applications(
+        application:applications!inner(
           id,
           candidate_id,
-          job:jobs(id, hr_id, title)
+          job:jobs!inner(id, hr_id, title)
         )
       `)
       .eq('id', invitationId)
@@ -288,6 +337,68 @@ router.post('/hr/invitations/:invitationId/schedule', authenticateToken, require
     });
   } catch (error) {
     console.error('Schedule interview error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get HR interviews
+router.get('/hr/interviews', authenticateToken, requireRole('hr'), async (req, res) => {
+  try {
+    const { data: interviews, error } = await supabase
+      .from('interviews')
+      .select(`
+        id,
+        start_at,
+        end_at,
+        room_code,
+        status,
+        job:jobs!inner(id, title, hr_id),
+        candidate:users!interviews_candidate_id_fkey(id, name, email),
+        invitation:invitations(id, message)
+      `)
+      .eq('job.hr_id', req.user.id)
+      .order('start_at', { ascending: false });
+
+    if (error) {
+      console.error('Database error:', error);
+      return res.status(500).json({ error: 'Failed to fetch interviews' });
+    }
+
+    res.json({ interviews: interviews || [] });
+  } catch (error) {
+    console.error('Get HR interviews error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get HR invitations
+router.get('/hr/invitations', authenticateToken, requireRole('hr'), async (req, res) => {
+  try {
+    const { data: invitations, error } = await supabase
+      .from('invitations')
+      .select(`
+        id,
+        status,
+        message,
+        created_at,
+        application:applications!inner(
+          id,
+          candidate:users!applications_candidate_id_fkey(id, name, email),
+          job:jobs!inner(id, title, hr_id)
+        ),
+        interview:interviews(id, start_at, end_at, room_code, status)
+      `)
+      .eq('application.job.hr_id', req.user.id)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('Database error:', error);
+      return res.status(500).json({ error: 'Failed to fetch invitations' });
+    }
+
+    res.json({ invitations: invitations || [] });
+  } catch (error) {
+    console.error('Get HR invitations error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

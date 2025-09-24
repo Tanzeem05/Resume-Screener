@@ -42,6 +42,12 @@ const Navbar = () => {
                     >
                       Invitations
                     </Link>
+                    <Link
+                      to="/candidate/interviews"
+                      className="text-gray-600 hover:text-primary-600 px-3 py-2 rounded-md text-sm font-medium"
+                    >
+                      Interviews
+                    </Link>
                   </>
                 )}
 

@@ -11,6 +11,7 @@ import Register from './pages/Register';
 import CandidateDashboard from './pages/candidate/Dashboard';
 import CandidateApply from './pages/candidate/Apply';
 import CandidateInvitations from './pages/candidate/Invitations';
+import CandidateInterviews from './pages/candidate/Interviews';
 import CandidateInterview from './pages/candidate/Interview';
 import HRDashboard from './pages/hr/Dashboard';
 import HRJobCreate from './pages/hr/JobCreate';
@@ -44,6 +45,11 @@ function App() {
               <Route path="/candidate/invitations" element={
                 <ProtectedRoute role="candidate">
                   <CandidateInvitations />
+                </ProtectedRoute>
+              } />
+              <Route path="/candidate/interviews" element={
+                <ProtectedRoute role="candidate">
+                  <CandidateInterviews />
                 </ProtectedRoute>
               } />
               <Route path="/candidate/interview/:roomCode" element={

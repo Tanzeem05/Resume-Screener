@@ -7,20 +7,26 @@ import api from '../../utils/api';
 const CandidateDashboard = () => {
   const { user } = useAuth();
   const [applications, setApplications] = useState([]);
+  const [interviews, setInterviews] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    fetchApplications();
+    fetchData();
   }, []);
 
-  const fetchApplications = async () => {
+  const fetchData = async () => {
     try {
-      const response = await api.get('/candidate/applications');
-      setApplications(response.data.applications);
+      const [applicationsRes, interviewsRes] = await Promise.all([
+        api.get('/candidate/applications'),
+        api.get('/invitations/candidate/interviews')
+      ]);
+      
+      setApplications(applicationsRes.data.applications);
+      setInterviews(interviewsRes.data.interviews);
     } catch (err) {
-      setError('Failed to load applications');
-      console.error('Error fetching applications:', err);
+      setError('Failed to load dashboard data');
+      console.error('Error fetching data:', err);
     } finally {
       setLoading(false);
     }
@@ -46,7 +52,7 @@ const CandidateDashboard = () => {
       </div>
 
       {/* Quick Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-6 mb-8">
         <div className="card p-6">
           <h3 className="text-lg font-medium text-gray-900">Total Applications</h3>
           <p className="text-3xl font-bold text-primary-600">{applications.length}</p>
@@ -64,12 +70,77 @@ const CandidateDashboard = () => {
           </p>
         </div>
         <div className="card p-6">
+          <h3 className="text-lg font-medium text-gray-900">Interviews</h3>
+          <p className="text-3xl font-bold text-blue-600">{interviews.length}</p>
+        </div>
+        <div className="card p-6">
           <h3 className="text-lg font-medium text-gray-900">Declined</h3>
           <p className="text-3xl font-bold text-red-600">
             {applications.filter(app => app.status === 'declined').length}
           </p>
         </div>
       </div>
+
+      {/* Upcoming Interviews */}
+      {interviews.filter(i => i.time_status === 'active' || i.time_status === 'upcoming').length > 0 && (
+        <div className="card mb-8">
+          <div className="px-6 py-4 border-b border-gray-200">
+            <h2 className="text-xl font-semibold text-gray-900">Upcoming Interviews</h2>
+          </div>
+          <div className="p-6">
+            <div className="space-y-4">
+              {interviews
+                .filter(i => i.time_status === 'active' || i.time_status === 'upcoming')
+                .slice(0, 3)
+                .map((interview) => (
+                  <div key={interview.id} className="flex justify-between items-center p-4 bg-blue-50 rounded-lg">
+                    <div>
+                      <h4 className="font-medium text-blue-900">{interview.job.title}</h4>
+                      <p className="text-sm text-blue-700">
+                        {formatDate(interview.start_at)} - {interview.job.hr.name}
+                      </p>
+                      <p className="text-xs text-blue-600">Room: {interview.room_code}</p>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      {interview.time_status === 'active' && (
+                        <Link
+                          to={`/candidate/interview/${interview.room_code}`}
+                          className="btn-primary text-sm"
+                        >
+                          Join Now
+                        </Link>
+                      )}
+                      {interview.time_status === 'upcoming' && (
+                        <span className="text-sm text-blue-600">
+                          {(() => {
+                            const now = new Date();
+                            const start = new Date(interview.start_at);
+                            const diffInMinutes = Math.floor((start - now) / (1000 * 60));
+                            const diffInHours = Math.floor(diffInMinutes / 60);
+                            
+                            if (diffInHours > 0) {
+                              return `In ${diffInHours}h`;
+                            } else {
+                              return `In ${diffInMinutes}m`;
+                            }
+                          })()}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+            </div>
+            {interviews.filter(i => i.time_status === 'active' || i.time_status === 'upcoming').length > 3 && (
+              <Link
+                to="/candidate/interviews"
+                className="text-primary-600 hover:text-primary-500 text-sm mt-4 inline-block"
+              >
+                View all interviews →
+              </Link>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Applications List */}
       <div className="card">

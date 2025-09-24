@@ -17,12 +17,12 @@ const HRInterviewSchedule = () => {
   const fetchData = async () => {
     try {
       const [invitationsRes, interviewsRes] = await Promise.all([
-        api.get('/invitations/hr'),
-        api.get('/interviews/hr')
+        api.get('/invitations/hr/invitations'),
+        api.get('/invitations/hr/interviews')
       ]);
       
-      setInvitations(invitationsRes.data);
-      setInterviews(interviewsRes.data);
+      setInvitations(invitationsRes.data.invitations);
+      setInterviews(interviewsRes.data.interviews);
     } catch (err) {
       setError('Failed to load interview data');
       console.error('Error fetching data:', err);
@@ -35,10 +35,12 @@ const HRInterviewSchedule = () => {
     setScheduling({ ...scheduling, [invitationId]: true });
 
     try {
-      const datetime = new Date(`${scheduledDate}T${scheduledTime}`);
+      const startDateTime = new Date(`${scheduledDate}T${scheduledTime}`);
+      const endDateTime = new Date(startDateTime.getTime() + 60 * 60 * 1000); // Add 1 hour
       
-      await api.post(`/interviews/hr/invitations/${invitationId}/schedule`, {
-        scheduled_at: datetime.toISOString()
+      await api.post(`/invitations/hr/invitations/${invitationId}/schedule`, {
+        start_at: startDateTime.toISOString(),
+        end_at: endDateTime.toISOString()
       });
       
       alert('Interview scheduled successfully!');
@@ -46,7 +48,8 @@ const HRInterviewSchedule = () => {
       
     } catch (err) {
       console.error('Error scheduling interview:', err);
-      alert('Failed to schedule interview. Please try again.');
+      const errorMsg = err.response?.data?.error || 'Failed to schedule interview. Please try again.';
+      alert(errorMsg);
     } finally {
       setScheduling({ ...scheduling, [invitationId]: false });
     }
@@ -82,7 +85,7 @@ const HRInterviewSchedule = () => {
     );
   }
 
-  const pendingInvitations = invitations.filter(inv => inv.status === 'accepted');
+  const pendingInvitations = invitations.filter(inv => inv.status === 'accepted' && !inv.interview);
   const scheduledInterviews = interviews.filter(interview => 
     interview.status === 'scheduled' || interview.status === 'completed'
   );
@@ -119,7 +122,7 @@ const HRInterviewSchedule = () => {
           <p className="text-3xl font-bold text-purple-600">
             {scheduledInterviews.filter(i => {
               const today = new Date().toDateString();
-              const interviewDate = new Date(i.scheduled_at).toDateString();
+              const interviewDate = new Date(i.start_at).toDateString();
               return today === interviewDate && i.status === 'scheduled';
             }).length}
           </p>
@@ -202,12 +205,9 @@ const HRInterviewSchedule = () => {
                         <div className="text-sm text-gray-900">
                           {invitation.application.job.title}
                         </div>
-                        <div className="text-sm text-gray-500">
-                          {invitation.application.job.company}
-                        </div>
                       </td>
                       <td className="px-6 py-4 text-sm text-gray-500">
-                        {formatDate(invitation.responded_at)}
+                        {formatDate(invitation.created_at)}
                       </td>
                       <td className="px-6 py-4">
                         <ScheduleForm 
@@ -264,27 +264,24 @@ const HRInterviewSchedule = () => {
                       <td className="px-6 py-4">
                         <div>
                           <div className="text-sm font-medium text-gray-900">
-                            {interview.invitation.application.candidate.name}
+                            {interview.candidate.name}
                           </div>
                           <div className="text-sm text-gray-500">
-                            {interview.invitation.application.candidate.email}
+                            {interview.candidate.email}
                           </div>
                         </div>
                       </td>
                       <td className="px-6 py-4">
                         <div className="text-sm text-gray-900">
-                          {interview.invitation.application.job.title}
-                        </div>
-                        <div className="text-sm text-gray-500">
-                          {interview.invitation.application.job.company}
+                          {interview.job.title}
                         </div>
                       </td>
                       <td className="px-6 py-4">
                         <div className="text-sm text-gray-900">
-                          {formatDate(interview.scheduled_at)}
+                          {formatDate(interview.start_at)}
                         </div>
                         <div className="text-sm text-gray-500">
-                          {formatTime(interview.scheduled_at)}
+                          {formatDateTime(interview.start_at)} - {formatDateTime(interview.end_at)}
                         </div>
                       </td>
                       <td className="px-6 py-4">
@@ -294,23 +291,28 @@ const HRInterviewSchedule = () => {
                       </td>
                       <td className="px-6 py-4 text-sm space-x-2">
                         {interview.status === 'scheduled' && (
-                          <a
-                            href={`/hr/interviews/${interview.id}`}
+                          <Link
+                            to={`/candidate/interview/${interview.room_code}`}
                             className="text-primary-600 hover:text-primary-500"
+                            target="_blank"
+                            rel="noopener noreferrer"
                           >
-                            Join Interview
-                          </a>
+                            Join Interview Room
+                          </Link>
                         )}
-                        {interview.status === 'completed' && interview.notes && (
+                        {interview.status === 'completed' && interview.agent_notes && (
                           <details>
                             <summary className="text-blue-600 hover:text-blue-500 cursor-pointer">
                               View Notes
                             </summary>
                             <div className="mt-2 p-3 bg-gray-50 rounded text-sm">
-                              {interview.notes}
+                              {interview.agent_notes}
                             </div>
                           </details>
                         )}
+                        <div className="text-xs text-gray-500 mt-1">
+                          Room: {interview.room_code}
+                        </div>
                       </td>
                     </tr>
                   ))}

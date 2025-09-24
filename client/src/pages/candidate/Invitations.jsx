@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Link } from "react-router-dom";
 import { formatDate, getStatusColor, getStatusLabel } from '../../utils/helpers';
 import api from '../../utils/api';
 
@@ -115,14 +116,26 @@ const CandidateInvitations = () => {
                     </div>
                   </div>
                   
-                  {invitation.interview.status === 'scheduled' && (
+                  {invitation.interview && (
                     <div className="mt-4">
-                      <a
-                        href={`/candidate/interview/${invitation.interview.room_code}`}
+                      <Link
+                        to={`/candidate/interview/${invitation.interview.room_code}`}
                         className="btn-primary"
                       >
-                        Join Interview
-                      </a>
+                        {(() => {
+                          const now = new Date();
+                          const startTime = new Date(invitation.interview.start_at);
+                          const endTime = new Date(invitation.interview.end_at);
+                          
+                          if (now >= startTime && now <= endTime) {
+                            return "Join Interview Now";
+                          } else if (now < startTime) {
+                            return "Preview Interview Room";
+                          } else {
+                            return "View Interview";
+                          }
+                        })()}
+                      </Link>
                     </div>
                   )}
                 </div>
