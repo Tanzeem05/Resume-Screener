@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { formatDate, getStatusColor, getStatusLabel } from '../../utils/helpers';
 import api from '../../utils/api';
+import InterviewScheduleModal from '../../components/InterviewScheduleModal';
 
 const HRJobApplicants = () => {
   const { jobId } = useParams();
@@ -10,6 +11,8 @@ const HRJobApplicants = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [inviting, setInviting] = useState({});
+  const [showScheduleModal, setShowScheduleModal] = useState(false);
+  const [selectedApplication, setSelectedApplication] = useState(null);
 
   useEffect(() => {
     fetchApplicants();
@@ -28,23 +31,41 @@ const HRJobApplicants = () => {
     }
   };
 
-  const handleInvite = async (applicationId) => {
-    setInviting({ ...inviting, [applicationId]: true });
+  const handleInviteClick = (application) => {
+    setSelectedApplication(application);
+    setShowScheduleModal(true);
+  };
+
+  const handleScheduleInterview = async (scheduleData) => {
+    if (!selectedApplication) return;
+
+    setInviting({ ...inviting, [selectedApplication.id]: true });
 
     try {
-      await api.post(`/invitations/hr/applications/${applicationId}/invite`, {
-        message: `You have been invited to interview for ${jobData.title}. Please check your invitations to accept or decline.`
-      });
+      await api.post(`/invitations/hr/applications/${selectedApplication.id}/invite`, scheduleData);
       
-      // You might want to show a success message here
-      alert('Invitation sent successfully!');
+      // Show success message
+      alert('Interview scheduled and invitation sent successfully!');
+      
+      // Refresh the applicants list
+      await fetchApplicants();
+      
+      // Close modal
+      setShowScheduleModal(false);
+      setSelectedApplication(null);
       
     } catch (err) {
-      console.error('Error sending invitation:', err);
-      alert('Failed to send invitation. Please try again.');
+      console.error('Error scheduling interview:', err);
+      const errorMessage = err.response?.data?.error || 'Failed to schedule interview. Please try again.';
+      alert(errorMessage);
     } finally {
-      setInviting({ ...inviting, [applicationId]: false });
+      setInviting({ ...inviting, [selectedApplication.id]: false });
     }
+  };
+
+  const handleCloseModal = () => {
+    setShowScheduleModal(false);
+    setSelectedApplication(null);
   };
 
   if (loading) {
@@ -204,11 +225,11 @@ const HRJobApplicants = () => {
                       
                       {application.status === 'screened' && (
                         <button
-                          onClick={() => handleInvite(application.id)}
+                          onClick={() => handleInviteClick(application)}
                           disabled={inviting[application.id]}
                           className="text-green-600 hover:text-green-500"
                         >
-                          {inviting[application.id] ? 'Inviting...' : 'Invite'}
+                          {inviting[application.id] ? 'Scheduling...' : 'Schedule Interview'}
                         </button>
                       )}
                       
@@ -242,6 +263,16 @@ const HRJobApplicants = () => {
           </div>
         )}
       </div>
+
+      {/* Interview Schedule Modal */}
+      <InterviewScheduleModal
+        isOpen={showScheduleModal}
+        onClose={handleCloseModal}
+        onSchedule={handleScheduleInterview}
+        candidateName={selectedApplication?.candidate?.name}
+        jobTitle={jobData?.title}
+        loading={selectedApplication ? inviting[selectedApplication.id] : false}
+      />
     </div>
   );
 };

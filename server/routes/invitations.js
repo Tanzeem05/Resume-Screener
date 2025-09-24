@@ -178,11 +178,35 @@ router.post('/candidate/invitations/:invitationId/decline', authenticateToken, r
   }
 });
 
-// Send invitation (HR only)
-router.post('/hr/applications/:applicationId/invite', authenticateToken, requireRole('hr'), async (req, res) => {
+// Send invitation with interview scheduling (HR only)
+router.post('/hr/applications/:applicationId/invite', [
+  body('message').optional().isString().trim(),
+  body('start_at').notEmpty().isISO8601().withMessage('Start time is required'),
+  body('end_at').notEmpty().isISO8601().withMessage('End time is required')
+], authenticateToken, requireRole('hr'), async (req, res) => {
   try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ 
+        error: 'Validation failed', 
+        details: errors.array() 
+      });
+    }
+
     const { applicationId } = req.params;
-    const { message } = req.body;
+    const { message, start_at, end_at } = req.body;
+
+    // Validate time range
+    const startTime = new Date(start_at);
+    const endTime = new Date(end_at);
+    
+    if (startTime >= endTime) {
+      return res.status(400).json({ error: 'End time must be after start time' });
+    }
+
+    if (startTime <= new Date()) {
+      return res.status(400).json({ error: 'Interview cannot be scheduled in the past' });
+    }
 
     // Verify HR owns the job for this application
     const { data: application, error: appError } = await supabase
@@ -190,6 +214,7 @@ router.post('/hr/applications/:applicationId/invite', authenticateToken, require
       .select(`
         id,
         candidate_id,
+        job_id,
         job:jobs(id, hr_id, title)
       `)
       .eq('id', applicationId)
@@ -214,25 +239,79 @@ router.post('/hr/applications/:applicationId/invite', authenticateToken, require
       return res.status(409).json({ error: 'Invitation already sent for this application' });
     }
 
+    // Generate unique room code
+    const generateRoomCode = () => {
+      const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+      let result = '';
+      for (let i = 0; i < 8; i++) {
+        result += chars.charAt(Math.floor(Math.random() * chars.length));
+      }
+      return result;
+    };
+
+    let roomCode = generateRoomCode();
+    
+    // Ensure room code is unique
+    let roomCodeExists = true;
+    while (roomCodeExists) {
+      const { data: existingRoom } = await supabase
+        .from('interviews')
+        .select('id')
+        .eq('room_code', roomCode)
+        .single();
+      
+      if (!existingRoom) {
+        roomCodeExists = false;
+      } else {
+        roomCode = generateRoomCode();
+      }
+    }
+
     // Create invitation
-    const { data: invitation, error } = await supabase
+    const { data: invitation, error: invitationError } = await supabase
       .from('invitations')
       .insert([{
         application_id: applicationId,
-        message: message || `You have been invited to interview for ${application.job.title}`,
+        message: message || `You have been invited to interview for ${application.job.title} on ${startTime.toLocaleDateString()} from ${startTime.toLocaleTimeString()} to ${endTime.toLocaleTimeString()}`,
         status: 'sent'
       }])
       .select('*')
       .single();
 
-    if (error) {
-      console.error('Database error:', error);
+    if (invitationError) {
+      console.error('Database error creating invitation:', invitationError);
       return res.status(500).json({ error: 'Failed to send invitation' });
     }
 
+    // Create interview record
+    const { data: interview, error: interviewError } = await supabase
+      .from('interviews')
+      .insert([{
+        invitation_id: invitation.id,
+        job_id: application.job_id,
+        candidate_id: application.candidate_id,
+        start_at: start_at,
+        end_at: end_at,
+        room_code: roomCode,
+        status: 'scheduled'
+      }])
+      .select('*')
+      .single();
+
+    if (interviewError) {
+      console.error('Database error creating interview:', interviewError);
+      // Rollback invitation if interview creation fails
+      await supabase
+        .from('invitations')
+        .delete()
+        .eq('id', invitation.id);
+      return res.status(500).json({ error: 'Failed to schedule interview' });
+    }
+
     res.status(201).json({
-      message: 'Invitation sent successfully',
-      invitation
+      message: 'Invitation sent and interview scheduled successfully',
+      invitation,
+      interview
     });
   } catch (error) {
     console.error('Send invitation error:', error);
