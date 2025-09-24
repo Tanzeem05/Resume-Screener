@@ -17,6 +17,7 @@ import HRDashboard from './pages/hr/Dashboard';
 import HRJobCreate from './pages/hr/JobCreate';
 import HRJobApplicants from './pages/hr/JobApplicants';
 import HRInterviewSchedule from './pages/hr/InterviewSchedule';
+import HRInterviews from './pages/hr/Interviews';
 
 function App() {
   return (
@@ -77,6 +78,11 @@ function App() {
               <Route path="/hr/interviews/:jobId/schedule/:applicationId" element={
                 <ProtectedRoute role="hr">
                   <HRInterviewSchedule />
+                </ProtectedRoute>
+              } />
+              <Route path="/hr/interviews" element={
+                <ProtectedRoute role="hr">
+                  <HRInterviews />
                 </ProtectedRoute>
               } />
             </Routes>
