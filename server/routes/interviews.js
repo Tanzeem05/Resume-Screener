@@ -261,7 +261,14 @@ router.post('/:roomCode/answer', authenticateToken, async (req, res) => {
       }
     );
 
-    const { next_response, interview_status, answer_evaluation } = continueResponse.data;
+    const { 
+      next_response, 
+      interview_status, 
+      answer_evaluation,
+      score,
+      rating,
+      overall_summary 
+    } = continueResponse.data;
 
     // Update session
     session.status = interview_status;
@@ -277,16 +284,46 @@ router.post('/:roomCode/answer', authenticateToken, async (req, res) => {
       current_question_number: session.current_question_number
     };
 
-    if (interview_status === 'INTERVIEW_COMPLETE') {
+    console.log('Interview status received:', interview_status);
+    const statusUpper = interview_status ? interview_status.toUpperCase() : '';
+    
+    if (statusUpper === 'INTERVIEW_COMPLETE') {
       // Interview is finished
       responseData.completed = true;
       responseData.total_questions = session.current_question_number;
+      responseData.score = score;
+      responseData.rating = rating;
+      responseData.overall_summary = overall_summary;
       
-      // Update interview status in database
-      await supabase
-        .from('interviews')
-        .update({ status: 'completed' })
-        .eq('id', session.interview_id);
+      try {
+        // Update interview status in database
+        await supabase
+          .from('interviews')
+          .update({ status: 'completed' })
+          .eq('id', session.interview_id);
+
+        // Insert interview summary into summary table
+        const { error: summaryError } = await supabase
+          .from('summary')
+          .insert({
+            interview_id: session.interview_id,
+            score: score || null,
+            rating: rating || null,
+            overall_summary: overall_summary || null,
+            created_at: new Date().toISOString()
+          });
+
+        if (summaryError) {
+          console.error('Error inserting interview summary:', summaryError);
+          // Don't fail the request, just log the error
+        } else {
+          console.log('Interview summary saved successfully');
+        }
+
+      } catch (dbError) {
+        console.error('Database operation error:', dbError);
+        // Don't fail the request, just log the error
+      }
 
       console.log('Interview completed successfully');
         
@@ -306,11 +343,33 @@ router.post('/:roomCode/answer', authenticateToken, async (req, res) => {
       responseData.completed = true;
       responseData.total_questions = session.current_question_number;
       
-      // Update interview status in database
-      await supabase
-        .from('interviews')
-        .update({ status: 'completed' })
-        .eq('id', session.interview_id);
+      try {
+        // Update interview status in database
+        await supabase
+          .from('interviews')
+          .update({ status: 'completed' })
+          .eq('id', session.interview_id);
+
+        // Insert interview summary (fallback case without external API data)
+        const { error: summaryError } = await supabase
+          .from('summary')
+          .insert({
+            interview_id: session.interview_id,
+            score: null,
+            rating: null,
+            overall_summary: 'Interview completed without final evaluation',
+            created_at: new Date().toISOString()
+          });
+
+        if (summaryError) {
+          console.error('Error inserting fallback interview summary:', summaryError);
+        } else {
+          console.log('Fallback interview summary saved');
+        }
+
+      } catch (dbError) {
+        console.error('Database operation error (fallback):', dbError);
+      }
 
       console.log('Interview completed (no more questions)');
     }
@@ -403,6 +462,153 @@ router.get('/:roomCode/messages', authenticateToken, async (req, res) => {
     res.json({ messages: messages || [] });
   } catch (error) {
     console.error('Get messages error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get all interview summaries for HR
+router.get('/hr/summaries', authenticateToken, requireRole(['hr']), async (req, res) => {
+  try {
+    const hrId = req.user.id;
+
+    // Get all interview summaries for jobs owned by this HR
+    const { data: summaries, error } = await supabase
+      .from('summary')
+      .select(`
+        id,
+        interview_id,
+        score,
+        rating,
+        overall_summary,
+        created_at,
+        interview:interviews(
+          id,
+          start_at,
+          end_at,
+          status,
+          candidate_id,
+          job_id,
+          candidate:users!interviews_candidate_id_fkey(
+            id,
+            name,
+            email
+          ),
+          job:jobs(
+            id,
+            title,
+            hr_id
+          )
+        )
+      `)
+      .eq('interview.job.hr_id', hrId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('Database error:', error);
+      return res.status(500).json({ error: 'Failed to fetch interview summaries' });
+    }
+
+    // Filter out any null interviews (in case of data inconsistency)
+    const validSummaries = summaries.filter(summary => summary.interview && summary.interview.job);
+
+    // Transform the data for frontend consumption
+    const transformedData = validSummaries.map(summary => ({
+      id: summary.id,
+      interview_id: summary.interview_id,
+      candidateName: summary.interview.candidate.name,
+      candidateEmail: summary.interview.candidate.email,
+      jobTitle: summary.interview.job.title,
+      scheduledAt: summary.interview.start_at,
+      completedAt: summary.created_at,
+      status: 'completed', // All summaries are for completed interviews
+      score: summary.score,
+      rating: summary.rating,
+      overall_summary: summary.overall_summary,
+      created_at: summary.created_at
+    }));
+
+    res.json({
+      summaries: transformedData,
+      total: transformedData.length
+    });
+
+  } catch (error) {
+    console.error('Get HR interview summaries error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Alternative route if the nested query doesn't work properly
+router.get('/hr/summaries-alt', authenticateToken, requireRole(['hr']), async (req, res) => {
+  try {
+    const hrId = req.user.id;
+
+    // First get all interviews for jobs owned by this HR
+    const { data: interviews, error: interviewsError } = await supabase
+      .from('interviews')
+      .select(`
+        id,
+        start_at,
+        end_at,
+        status,
+        candidate_id,
+        job_id,
+        candidate:users!interviews_candidate_id_fkey(id, name, email),
+        job:jobs!interviews_job_id_fkey(id, title)
+      `)
+      .eq('job.hr_id', hrId)
+      .eq('status', 'completed');
+
+    if (interviewsError) {
+      console.error('Interviews fetch error:', interviewsError);
+      return res.status(500).json({ error: 'Failed to fetch interviews' });
+    }
+
+    if (!interviews || interviews.length === 0) {
+      return res.json({ summaries: [], total: 0 });
+    }
+
+    // Get interview IDs
+    const interviewIds = interviews.map(interview => interview.id);
+
+    // Get summaries for these interviews
+    const { data: summaries, error: summariesError } = await supabase
+      .from('summary')
+      .select('*')
+      .in('interview_id', interviewIds)
+      .order('created_at', { ascending: false });
+
+    if (summariesError) {
+      console.error('Summaries fetch error:', summariesError);
+      return res.status(500).json({ error: 'Failed to fetch summaries' });
+    }
+
+    // Combine interview and summary data
+    const transformedData = summaries.map(summary => {
+      const interview = interviews.find(i => i.id === summary.interview_id);
+      return {
+        id: summary.id,
+        interview_id: summary.interview_id,
+        candidateName: interview.candidate.name,
+        candidateEmail: interview.candidate.email,
+        jobTitle: interview.job.title,
+        scheduledAt: interview.start_at,
+        completedAt: summary.created_at,
+        status: 'completed',
+        score: summary.score,
+        rating: summary.rating,
+        overall_summary: summary.overall_summary,
+        created_at: summary.created_at
+      };
+    });
+
+    res.json({
+      summaries: transformedData,
+      total: transformedData.length
+    });
+
+  } catch (error) {
+    console.error('Get HR interview summaries error (alt):', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
