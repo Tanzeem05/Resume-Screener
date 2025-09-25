@@ -1,66 +1,39 @@
 const WebSocket = require('ws');
 const jwt = require('jsonwebtoken');
 const { supabase } = require('../config/supabase');
-const { interviewAgentReply } = require('../services/smythos');
 
-// Store active connections
-const connections = new Map();
+// Store connected clients by room
+const rooms = new Map();
 
-function setupWebSocket(wss) {
-  wss.on('connection', async (ws, req) => {
-    console.log('New WebSocket connection');
+const handleWebSocketConnection = (ws, req) => {
+  let user = null;
+  let roomCode = null;
+  let interview = null;
 
-    // Handle authentication
-    ws.on('message', async (message) => {
-      try {
-        const data = JSON.parse(message);
+  ws.on('message', async (message) => {
+    try {
+      const data = JSON.parse(message);
 
-        // Handle authentication message
-        if (data.type === 'auth') {
-          const { token, roomCode } = data;
-
-          if (!token || !roomCode) {
-            ws.send(JSON.stringify({
-              type: 'error',
-              message: 'Token and room code required'
-            }));
-            return;
-          }
-
+      switch (data.type) {
+        case 'auth':
           try {
             // Verify JWT token
-            const decoded = jwt.verify(token, process.env.JWT_SECRET);
-            
-            // Get user data
-            const { data: user, error: userError } = await supabase
-              .from('users')
-              .select('*')
-              .eq('id', decoded.userId)
-              .single();
+            const decoded = jwt.verify(data.token, process.env.JWT_SECRET);
+            user = decoded;
 
-            if (userError || !user) {
-              ws.send(JSON.stringify({
-                type: 'error',
-                message: 'Invalid token'
-              }));
-              return;
-            }
-
-            // Verify access to interview room
-            const { data: interview, error: interviewError } = await supabase
+            // Verify interview access
+            const { data: interviewData, error } = await supabase
               .from('interviews')
               .select(`
                 id,
                 candidate_id,
-                start_at,
-                end_at,
                 status,
                 job:jobs(hr_id)
               `)
-              .eq('room_code', roomCode)
+              .eq('room_code', data.roomCode)
               .single();
 
-            if (interviewError || !interview) {
+            if (error || !interviewData) {
               ws.send(JSON.stringify({
                 type: 'error',
                 message: 'Interview not found'
@@ -69,190 +42,160 @@ function setupWebSocket(wss) {
             }
 
             // Check authorization
-            const isCandidate = user.id === interview.candidate_id;
-            const isHR = user.id === interview.job.hr_id;
+            const isCandidate = user.id === interviewData.candidate_id;
+            const isHR = user.id === interviewData.job.hr_id;
 
             if (!isCandidate && !isHR) {
               ws.send(JSON.stringify({
                 type: 'error',
-                message: 'Not authorized'
+                message: 'Not authorized to access this interview'
               }));
               return;
             }
 
-            // Check if interview is active
-            const now = new Date();
-            const startTime = new Date(interview.start_at);
-            const endTime = new Date(interview.end_at);
-            
-            if (now < startTime || now > endTime) {
-              ws.send(JSON.stringify({
-                type: 'error',
-                message: 'Interview is not currently active'
-              }));
-              return;
+            roomCode = data.roomCode;
+            interview = interviewData;
+
+            // Add client to room
+            if (!rooms.has(roomCode)) {
+              rooms.set(roomCode, new Set());
             }
+            rooms.get(roomCode).add(ws);
 
-            // Store connection
-            ws.user = user;
-            ws.interviewId = interview.id;
-            ws.roomCode = roomCode;
-            ws.userRole = isCandidate ? 'candidate' : 'hr';
-
-            const connectionKey = `${roomCode}_${user.id}`;
-            connections.set(connectionKey, ws);
-
-            // Send success response
             ws.send(JSON.stringify({
               type: 'auth_success',
-              user: {
-                id: user.id,
-                name: user.name,
-                role: ws.userRole
-              }
+              user_role: isCandidate ? 'candidate' : 'hr'
             }));
 
-            // Send recent messages
+            // Send message history
             const { data: messages } = await supabase
               .from('interview_messages')
-              .select('sender, content, created_at')
+              .select('id, sender, content, created_at')
               .eq('interview_id', interview.id)
               .order('created_at', { ascending: true })
               .limit(50);
 
-            if (messages && messages.length > 0) {
-              ws.send(JSON.stringify({
-                type: 'message_history',
-                messages
-              }));
-            }
+            ws.send(JSON.stringify({
+              type: 'message_history',
+              messages: messages || []
+            }));
 
-            console.log(`User ${user.name} joined interview room ${roomCode}`);
           } catch (authError) {
-            console.error('WebSocket auth error:', authError);
+            console.error('Auth error:', authError);
             ws.send(JSON.stringify({
               type: 'error',
               message: 'Authentication failed'
             }));
           }
-        }
+          break;
 
-        // Handle chat messages
-        else if (data.type === 'message' && ws.user) {
-          const { content } = data;
-
-          if (!content || content.trim().length === 0) {
-            return;
-          }
-
-          // Only candidates can send messages (HR observes)
-          if (ws.userRole !== 'candidate') {
+        case 'message':
+          if (!user || !roomCode || !interview) {
             ws.send(JSON.stringify({
               type: 'error',
-              message: 'Only candidates can send messages'
+              message: 'Not authenticated'
             }));
             return;
           }
 
           // Store message in database
-          const { data: message, error } = await supabase
+          const { error: insertError } = await supabase
             .from('interview_messages')
-            .insert([{
-              interview_id: ws.interviewId,
-              sender: 'candidate',
-              content: content.trim()
-            }])
-            .select('*')
-            .single();
+            .insert({
+              interview_id: interview.id,
+              sender: user.role,
+              content: data.content
+            });
 
-          if (error) {
-            console.error('Failed to store message:', error);
+          if (insertError) {
+            console.error('Insert message error:', insertError);
+            ws.send(JSON.stringify({
+              type: 'error',
+              message: 'Failed to send message'
+            }));
             return;
           }
 
-          // Broadcast candidate message to all users in room
-          broadcastToRoom(ws.roomCode, {
+          // Broadcast message to all clients in the room
+          const messageData = {
             type: 'message',
             message: {
-              id: message.id,
-              sender: 'candidate',
-              content: message.content,
-              created_at: message.created_at
+              sender: user.role,
+              content: data.content,
+              created_at: new Date().toISOString()
             }
-          });
+          };
 
-          // Get AI agent reply
-          try {
-            const agentReply = await interviewAgentReply({
-              roomCode: ws.roomCode,
-              history: [], // Could be enhanced to include recent message history
-              message: content
-            });
+          broadcastToRoom(roomCode, messageData);
+          break;
 
-            // Store agent reply
-            const { data: agentMessage, error: agentError } = await supabase
-              .from('interview_messages')
-              .insert([{
-                interview_id: ws.interviewId,
+        case 'interview_question':
+          // Handle AI interviewer questions
+          if (data.question) {
+            const questionData = {
+              type: 'message',
+              message: {
                 sender: 'agent',
-                content: agentReply
-              }])
-              .select('*')
-              .single();
-
-            if (!agentError) {
-              // Broadcast agent reply
-              setTimeout(() => {
-                broadcastToRoom(ws.roomCode, {
-                  type: 'message',
-                  message: {
-                    id: agentMessage.id,
-                    sender: 'agent',
-                    content: agentMessage.content,
-                    created_at: agentMessage.created_at
-                  }
-                });
-              }, 1000); // Small delay to simulate typing
-            }
-          } catch (agentError) {
-            console.error('Agent reply error:', agentError);
+                content: data.question,
+                created_at: new Date().toISOString()
+              }
+            };
+            broadcastToRoom(roomCode, questionData);
           }
-        }
+          break;
 
-      } catch (parseError) {
-        console.error('WebSocket message parse error:', parseError);
-        ws.send(JSON.stringify({
-          type: 'error',
-          message: 'Invalid message format'
-        }));
+        default:
+          console.log('Unknown message type:', data.type);
       }
-    });
-
-    // Handle connection close
-    ws.on('close', () => {
-      if (ws.user && ws.roomCode) {
-        const connectionKey = `${ws.roomCode}_${ws.user.id}`;
-        connections.delete(connectionKey);
-        console.log(`User ${ws.user.name} left interview room ${ws.roomCode}`);
-      }
-    });
-
-    // Handle errors
-    ws.on('error', (error) => {
-      console.error('WebSocket error:', error);
-    });
-  });
-}
-
-// Broadcast message to all users in a room
-function broadcastToRoom(roomCode, message) {
-  connections.forEach((ws, connectionKey) => {
-    if (connectionKey.startsWith(roomCode) && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(message));
+    } catch (error) {
+      console.error('WebSocket message error:', error);
+      ws.send(JSON.stringify({
+        type: 'error',
+        message: 'Invalid message format'
+      }));
     }
   });
-}
 
-module.exports = {
-  setupWebSocket
+  ws.on('close', () => {
+    console.log('WebSocket connection closed');
+    // Remove client from room
+    if (roomCode && rooms.has(roomCode)) {
+      rooms.get(roomCode).delete(ws);
+      if (rooms.get(roomCode).size === 0) {
+        rooms.delete(roomCode);
+      }
+    }
+  });
+
+  ws.on('error', (error) => {
+    console.error('WebSocket error:', error);
+  });
+};
+
+const broadcastToRoom = (roomCode, data) => {
+  if (rooms.has(roomCode)) {
+    const clients = rooms.get(roomCode);
+    const message = JSON.stringify(data);
+    
+    clients.forEach(client => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(message);
+      }
+    });
+  }
+};
+
+const setupWebSocket = (wss) => {
+  wss.on('connection', (ws, req) => {
+    console.log('New WebSocket connection established');
+    handleWebSocketConnection(ws, req);
+  });
+
+  console.log('WebSocket server setup completed');
+};
+
+module.exports = { 
+  handleWebSocketConnection, 
+  setupWebSocket,
+  broadcastToRoom 
 };

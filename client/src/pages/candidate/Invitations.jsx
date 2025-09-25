@@ -25,6 +25,7 @@ const CandidateInvitations = () => {
     }
   };
 
+
   const handleInvitationAction = async (invitationId, action) => {
     setActionLoading({ ...actionLoading, [invitationId]: true });
     
@@ -116,7 +117,8 @@ const CandidateInvitations = () => {
                     </div>
                   </div>
                   
-                  {invitation.interview && (
+                  {/* Only show interview room button if invitation is accepted */}
+                  {invitation.interview && invitation.status === 'accepted' && (
                     <div className="mt-4">
                       <Link
                         to={`/candidate/interview/${invitation.interview.room_code}`}

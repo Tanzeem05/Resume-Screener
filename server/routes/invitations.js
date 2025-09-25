@@ -9,28 +9,54 @@ const router = express.Router();
 // Get candidate's interviews (separate from invitations)
 router.get('/candidate/interviews', authenticateToken, requireRole('candidate'), async (req, res) => {
   try {
-    const { data: interviews, error } = await supabase
+    // First, get all interviews for the candidate
+    const { data: interviews, error: interviewsError } = await supabase
       .from('interviews')
       .select(`
         id,
+        invitation_id,
         start_at,
         end_at,
         room_code,
         status,
-        job:jobs(id, title, location, hr:users!jobs_hr_id_fkey(name, email)),
-        invitation:invitations(id, message)
+        number_of_questions,
+        job:jobs(id, title, location, hr:users!jobs_hr_id_fkey(name, email))
       `)
       .eq('candidate_id', req.user.id)
       .order('start_at', { ascending: false });
 
-    if (error) {
-      console.error('Database error:', error);
+    if (interviewsError) {
+      console.error('Database error:', interviewsError);
       return res.status(500).json({ error: 'Failed to fetch interviews' });
     }
 
-    // Add time status to each interview
+    if (!interviews || interviews.length === 0) {
+      return res.json({ interviews: [] });
+    }
+
+    // Get invitation details for these interviews
+    const invitationIds = interviews.map(interview => interview.invitation_id);
+    const { data: invitations, error: invitationsError } = await supabase
+      .from('invitations')
+      .select('id, message, status')
+      .in('id', invitationIds);
+
+    if (invitationsError) {
+      console.error('Invitations error:', invitationsError);
+      return res.status(500).json({ error: 'Failed to fetch invitation details' });
+    }
+
+    // Filter interviews to only include those with accepted invitations
+    const acceptedInvitations = invitations?.filter(inv => inv.status === 'accepted') || [];
+    const acceptedInvitationIds = acceptedInvitations.map(inv => inv.id);
+    
+    const filteredInterviews = interviews.filter(interview => 
+      acceptedInvitationIds.includes(interview.invitation_id)
+    );
+
+    // Add time status and invitation details to each interview
     const now = new Date();
-    const interviewsWithStatus = interviews?.map(interview => {
+    const interviewsWithStatus = filteredInterviews.map(interview => {
       const startTime = new Date(interview.start_at);
       const endTime = new Date(interview.end_at);
       
@@ -41,11 +67,15 @@ router.get('/candidate/interviews', authenticateToken, requireRole('candidate'),
         timeStatus = 'past';
       }
 
+      // Find the corresponding invitation
+      const invitation = invitations?.find(inv => inv.id === interview.invitation_id);
+
       return {
         ...interview,
-        time_status: timeStatus
+        time_status: timeStatus,
+        invitation: invitation || null
       };
-    }) || [];
+    });
 
     res.json({ interviews: interviewsWithStatus });
   } catch (error) {
@@ -54,10 +84,11 @@ router.get('/candidate/interviews', authenticateToken, requireRole('candidate'),
   }
 });
 
-// Get candidate's invitations
+// Get candidate's invitations (Alternative approach)
 router.get('/candidate/invitations', authenticateToken, requireRole('candidate'), async (req, res) => {
   try {
-    const { data: invitations, error } = await supabase
+    // First get invitations
+    const { data: invitations, error: invError } = await supabase
       .from('invitations')
       .select(`
         id,
@@ -68,18 +99,41 @@ router.get('/candidate/invitations', authenticateToken, requireRole('candidate')
           id,
           candidate_id,
           job:jobs(id, title, location, hr:users!jobs_hr_id_fkey(name, email))
-        ),
-        interview:interviews(id, start_at, end_at, room_code, status)
+        )
       `)
       .eq('application.candidate_id', req.user.id)
       .order('created_at', { ascending: false });
 
-    if (error) {
-      console.error('Database error:', error);
+    if (invError) {
+      console.error('Database error:', invError);
       return res.status(500).json({ error: 'Failed to fetch invitations' });
     }
 
-    res.json({ invitations: invitations || [] });
+    // Get all interview details for these invitations in one query
+    const invitationIds = (invitations || []).map(inv => inv.id);
+    
+    let interviews = [];
+    if (invitationIds.length > 0) {
+      const { data: interviewData, error: intError } = await supabase
+        .from('interviews')
+        .select('id, invitation_id, start_at, end_at, room_code, status, number_of_questions')
+        .in('invitation_id', invitationIds);
+
+      if (!intError) {
+        interviews = interviewData || [];
+      }
+    }
+
+    // Merge invitations with their corresponding interviews
+    const invitationsWithInterviews = (invitations || []).map(invitation => {
+      const interview = interviews.find(int => int.invitation_id === invitation.id);
+      return {
+        ...invitation,
+        interview: interview || null
+      };
+    });
+
+    res.json({ invitations: invitationsWithInterviews });
   } catch (error) {
     console.error('Get invitations error:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -194,7 +248,7 @@ router.post('/hr/applications/:applicationId/invite', [
     }
 
     const { applicationId } = req.params;
-    const { message, start_at, end_at } = req.body;
+    const { message, start_at, end_at, number_of_questions } = req.body;
 
     // Validate time range
     const startTime = new Date(start_at);
@@ -282,16 +336,18 @@ router.post('/hr/applications/:applicationId/invite', [
       console.error('Database error creating invitation:', invitationError);
       return res.status(500).json({ error: 'Failed to send invitation' });
     }
-
+    console.log(number_of_questions);
     // Create interview record
     const { data: interview, error: interviewError } = await supabase
       .from('interviews')
       .insert([{
         invitation_id: invitation.id,
         job_id: application.job_id,
+        application_id: application.id,
         candidate_id: application.candidate_id,
         start_at: start_at,
         end_at: end_at,
+        number_of_questions: number_of_questions,
         room_code: roomCode,
         status: 'scheduled'
       }])
