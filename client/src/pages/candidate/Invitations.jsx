@@ -118,7 +118,7 @@ const CandidateInvitations = () => {
                   </div>
                   
                   {/* Only show interview room button if invitation is accepted */}
-                  {invitation.interview && invitation.status === 'accepted' && (
+                  {invitation.interview && invitation.status === 'accepted' && invitation.interview.status !== 'completed' && (
                     <div className="mt-4">
                       <Link
                         to={`/candidate/interview/${invitation.interview.room_code}`}

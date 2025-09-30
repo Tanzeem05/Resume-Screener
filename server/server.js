@@ -26,8 +26,7 @@ const app = express();
 const server = http.createServer(app);
 
 const PORT = process.env.PORT || 3001;
-const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:5173';
-
+const CORS_ORIGIN = process.env.CLIENT_URL || 'http://localhost:5173';
 // WebSocket server - make sure this is after server creation
 const wss = new WebSocket.Server({ 
   server,

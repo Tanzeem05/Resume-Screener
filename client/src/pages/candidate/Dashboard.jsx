@@ -82,7 +82,7 @@ const CandidateDashboard = () => {
       </div>
 
       {/* Upcoming Interviews */}
-      {interviews.filter(i => i.time_status === 'active' || i.time_status === 'upcoming').length > 0 && (
+      {interviews.filter(i => i.status !== 'completed' && (i.time_status === 'active' || i.time_status === 'upcoming')).length > 0 && (
         <div className="card mb-8">
           <div className="px-6 py-4 border-b border-gray-200">
             <h2 className="text-xl font-semibold text-gray-900">Upcoming Interviews</h2>
