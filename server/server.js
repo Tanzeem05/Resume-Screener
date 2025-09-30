@@ -7,7 +7,6 @@ const path = require('path');
 const http = require('http');
 const WebSocket = require('ws');
 
-
 // Import routes
 const authRoutes = require('./routes/auth');
 const jobRoutes = require('./routes/jobs');
@@ -26,12 +25,17 @@ const { errorHandler } = require('./middleware/errorHandler');
 const app = express();
 const server = http.createServer(app);
 
-// WebSocket server
-const wss = new WebSocket.Server({ server });
-setupWebSocket(wss);
-
 const PORT = process.env.PORT || 3001;
 const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:5173';
+
+// WebSocket server - make sure this is after server creation
+const wss = new WebSocket.Server({ 
+  server,
+  path: '/ws'
+});
+
+// Setup WebSocket handling
+setupWebSocket(wss);
 
 // Middleware
 app.use(helmet({
@@ -53,6 +57,15 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// WebSocket health check
+app.get('/api/ws-health', (req, res) => {
+  res.json({ 
+    websocket: 'ready',
+    clients: wss.clients.size,
+    path: '/ws'
+  });
+});
+
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/jobs', jobRoutes);
@@ -71,7 +84,29 @@ app.use((req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`WebSocket server ready`);
-  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`📡 WebSocket server ready on ws://localhost:${PORT}/ws`);
+  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🔗 CORS Origin: ${CORS_ORIGIN}`);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received, shutting down gracefully');
+  wss.close(() => {
+    server.close(() => {
+      console.log('Server closed');
+      process.exit(0);
+    });
+  });
+});
+
+process.on('SIGINT', () => {
+  console.log('SIGINT received, shutting down gracefully');
+  wss.close(() => {
+    server.close(() => {
+      console.log('Server closed');
+      process.exit(0);
+    });
+  });
 });

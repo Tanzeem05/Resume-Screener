@@ -12,7 +12,8 @@ const InterviewScheduleModal = ({
     date: '',
     startTime: '',
     endTime: '',
-    message: ''
+    message: '',
+    numberOfQuestions: 5
   });
   const [errors, setErrors] = useState({});
 
@@ -45,17 +46,53 @@ const InterviewScheduleModal = ({
     if (!formData.endTime) {
       newErrors.endTime = 'End time is required';
     }
+
+    if (!formData.numberOfQuestions || formData.numberOfQuestions < 1) {
+      newErrors.numberOfQuestions = 'Number of questions must be at least 1';
+    }
+
+    if (formData.numberOfQuestions > 20) {
+      newErrors.numberOfQuestions = 'Number of questions cannot exceed 20';
+    }
     
-    if (formData.startTime && formData.endTime) {
-      const start = new Date(`${formData.date}T${formData.startTime}`);
-      const end = new Date(`${formData.date}T${formData.endTime}`);
+    if (formData.date && formData.startTime && formData.endTime) {
+      // Create dates in local timezone to avoid timezone issues
+      const selectedDate = formData.date;
+      let startDateTime = new Date(`${selectedDate}T${formData.startTime}:00`);
+      let endDateTime = new Date(`${selectedDate}T${formData.endTime}:00`);
+      const now = new Date();
       
-      if (start >= end) {
-        newErrors.endTime = 'End time must be after start time';
+      // If end time is before start time, assume it's the next day
+      if (endDateTime <= startDateTime) {
+        endDateTime = new Date(endDateTime.getTime() + 24 * 60 * 60 * 1000); // Add 24 hours
       }
       
-      if (start <= new Date()) {
-        newErrors.date = 'Interview cannot be scheduled in the past';
+      // Check if the scheduled time is in the past (with 5 minute buffer)
+      const bufferTime = 5 * 60 * 1000; // 5 minutes in milliseconds
+      if (startDateTime.getTime() <= (now.getTime() + bufferTime)) {
+        newErrors.startTime = 'Start time must be at least 5 minutes in the future';
+      }
+
+      // For overnight interviews, we don't need to check if end time is in the past
+      // since it could legitimately be the next day
+      
+      // Minimum duration check (at least 15 minutes)
+      const durationMs = endDateTime.getTime() - startDateTime.getTime();
+      const durationMinutes = durationMs / (1000 * 60);
+      
+      if (durationMinutes < 15) {
+        newErrors.endTime = 'Interview must be at least 15 minutes long';
+      }
+
+      // Maximum duration check (at most 12 hours to allow overnight interviews)
+      if (durationMinutes > 720) { // 12 hours
+        newErrors.endTime = 'Interview cannot exceed 12 hours';
+      }
+
+      // Warn about overnight interviews
+      if (endDateTime.getDate() !== startDateTime.getDate()) {
+        // This is an overnight interview - add a note but don't error
+        // You could add a warning message here if needed
       }
     }
     
@@ -70,12 +107,19 @@ const InterviewScheduleModal = ({
       return;
     }
 
-    const startDateTime = new Date(`${formData.date}T${formData.startTime}`);
-    const endDateTime = new Date(`${formData.date}T${formData.endTime}`);
+    // Create proper ISO datetime strings
+    let startDateTime = new Date(`${formData.date}T${formData.startTime}:00`);
+    let endDateTime = new Date(`${formData.date}T${formData.endTime}:00`);
+    
+    // If end time is before start time, assume it's the next day
+    if (endDateTime <= startDateTime) {
+      endDateTime = new Date(endDateTime.getTime() + 24 * 60 * 60 * 1000); // Add 24 hours
+    }
     
     onSchedule({
       start_at: startDateTime.toISOString(),
       end_at: endDateTime.toISOString(),
+      number_of_questions: parseInt(formData.numberOfQuestions),
       message: formData.message || `You have been invited to interview for ${jobTitle}. Please check your invitations to accept or decline.`
     });
   };
@@ -85,7 +129,8 @@ const InterviewScheduleModal = ({
       date: '',
       startTime: '',
       endTime: '',
-      message: ''
+      message: '',
+      numberOfQuestions: 5
     });
     setErrors({});
     onClose();
@@ -93,10 +138,31 @@ const InterviewScheduleModal = ({
 
   if (!isOpen) return null;
 
-  // Get minimum date (tomorrow)
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const minDate = tomorrow.toISOString().split('T')[0];
+  // Get today's date in YYYY-MM-DD format (local timezone)
+  const today = new Date();
+  const todayString = today.getFullYear() + '-' + 
+                     String(today.getMonth() + 1).padStart(2, '0') + '-' + 
+                     String(today.getDate()).padStart(2, '0');
+
+  // Get current time in HH:MM format
+  const currentHours = String(today.getHours()).padStart(2, '0');
+  const currentMinutes = String(today.getMinutes()).padStart(2, '0');
+  const currentTime = `${currentHours}:${currentMinutes}`;
+
+  const isToday = formData.date === todayString;
+
+  // Calculate minimum time for today (current time + 5 minutes)
+  let minTime = '';
+  if (isToday) {
+    const minDateTime = new Date(today.getTime() + 5 * 60 * 1000); // Add 5 minutes
+    const minHours = String(minDateTime.getHours()).padStart(2, '0');
+    const minMinutes = String(minDateTime.getMinutes()).padStart(2, '0');
+    minTime = `${minHours}:${minMinutes}`;
+  }
+
+  // Check if this would be an overnight interview
+  const isOvernightInterview = formData.startTime && formData.endTime && 
+                              formData.startTime > formData.endTime;
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
@@ -137,7 +203,7 @@ const InterviewScheduleModal = ({
                 name="date"
                 value={formData.date}
                 onChange={handleInputChange}
-                min={minDate}
+                min={todayString}
                 className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 ${
                   errors.date ? 'border-red-500' : 'border-gray-300'
                 }`}
@@ -145,6 +211,11 @@ const InterviewScheduleModal = ({
               />
               {errors.date && (
                 <p className="text-red-500 text-sm mt-1">{errors.date}</p>
+              )}
+              {isToday && (
+                <p className="text-blue-600 text-xs mt-1">
+                  ℹ️ Today selected - minimum time is 5 minutes from now
+                </p>
               )}
             </div>
 
@@ -159,6 +230,7 @@ const InterviewScheduleModal = ({
                   name="startTime"
                   value={formData.startTime}
                   onChange={handleInputChange}
+                  min={isToday ? minTime : undefined}
                   className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 ${
                     errors.startTime ? 'border-red-500' : 'border-gray-300'
                   }`}
@@ -166,6 +238,11 @@ const InterviewScheduleModal = ({
                 />
                 {errors.startTime && (
                   <p className="text-red-500 text-sm mt-1">{errors.startTime}</p>
+                )}
+                {isToday && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    Current time: {currentTime} | Min: {minTime}
+                  </p>
                 )}
               </div>
 
@@ -187,7 +264,40 @@ const InterviewScheduleModal = ({
                 {errors.endTime && (
                   <p className="text-red-500 text-sm mt-1">{errors.endTime}</p>
                 )}
+                {isOvernightInterview && (
+                  <p className="text-amber-600 text-xs mt-1">
+                    ⚠️ This will be an overnight interview (ends next day)
+                  </p>
+                )}
               </div>
+            </div>
+
+            <div>
+              <label htmlFor="numberOfQuestions" className="block text-sm font-medium text-gray-700 mb-1">
+                Number of Questions
+              </label>
+              <select
+                id="numberOfQuestions"
+                name="numberOfQuestions"
+                value={formData.numberOfQuestions}
+                onChange={handleInputChange}
+                className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 ${
+                  errors.numberOfQuestions ? 'border-red-500' : 'border-gray-300'
+                }`}
+                required
+              >
+                {Array.from({ length: 20 }, (_, i) => i + 1).map(num => (
+                  <option key={num} value={num}>
+                    {num} question{num > 1 ? 's' : ''}
+                  </option>
+                ))}
+              </select>
+              {errors.numberOfQuestions && (
+                <p className="text-red-500 text-sm mt-1">{errors.numberOfQuestions}</p>
+              )}
+              <p className="text-xs text-gray-500 mt-1">
+                Select the number of questions for the interview (1-20)
+              </p>
             </div>
 
             <div>
